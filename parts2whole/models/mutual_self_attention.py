@@ -292,6 +292,7 @@ class ReferenceAttentionControl:
                 module.bank = []
                 module.attn_weight = float(i) / float(len(attn_modules))
 
+    ### 最核心的函数，将refnet的逐层的visual token导入mainnet
     def update(self, writer, dtype=torch.float16):
         if self.reference_attn:
             if self.fusion_blocks == "midup":
@@ -310,6 +311,8 @@ class ReferenceAttentionControl:
                     )
                     if isinstance(module, BasicTransformerBlock)
                 ]
+
+            ## 将ref_net和main_net在BasicTransformerBlock中的对应的所有模块提取出来
             elif self.fusion_blocks == "full":
                 reader_attn_modules = [
                     module
@@ -321,24 +324,33 @@ class ReferenceAttentionControl:
                     for module in torch_dfs(writer.unet)
                     if isinstance(module, BasicTransformerBlock)
                 ]
+            
+            ## 提取的所有模块进行排序，注意排序的标签号的定义 -x.norm1.normalized_shape[0]
             reader_attn_modules = sorted(
                 reader_attn_modules, key=lambda x: -x.norm1.normalized_shape[0]
             )
             writer_attn_modules = sorted(
                 writer_attn_modules, key=lambda x: -x.norm1.normalized_shape[0]
             )
+
+            ## reader和writer中属性排列对齐后，对于每个module都有一个bank，将ref_net中每个module的bank信息传递给mainnet的每个model的bank
+            ## 核心传递方法：给unet的每个module定义一个bank
             for r, w in zip(reader_attn_modules, writer_attn_modules):
                 r.bank = [v.clone().to(dtype) for v in w.bank]
                 # w.bank.clear()
 
+    ### 自定义类的clear方法
     def clear(self):
         if self.reference_attn:
+            
             if self.fusion_blocks == "midup":
                 reader_attn_modules = [
                     module
                     for module in (
+                        ## 深度优先搜索网络模型，返回模型所有的模块
                         torch_dfs(self.unet.mid_block) + torch_dfs(self.unet.up_blocks)
                     )
+                    ## 仅针对Spatial Transformer Block
                     if isinstance(module, BasicTransformerBlock)
                 ]
             elif self.fusion_blocks == "full":

@@ -433,11 +433,18 @@ def main(
                 pose_fea = pose_guider(pixel_values_pose)
 
             # Update the reference attention features to the bank
+            ### 核心训练部分，以一定概率不让appnet的token参与训练
             if reference_dropout and torch.rand(1).item() < reference_dropout:
+                ## clear掉了main net的bank
                 reference_control_writer.clear()
             else:
                 # Process reference text for conditioning ref unet -> [bs, 77, 768]
+
+                ## 这里很关键，如何将appnet引入原始架构
+                ## 也需要一个timestep，但是timestep全置为0，相当于mainnet的任何一个step均以纯净的app visual token作为ref
                 ref_timesteps = torch.zeros_like(timesteps)  # Use t=0 in ref_unet
+
+                ## 这里的app_dict里面都有什么？
                 for key, value in appearance_dict.items():
                     if reference_dropout and torch.rand(1).item() < reference_dropout:
                         continue
@@ -447,14 +454,17 @@ def main(
                         torch.ones((bsz, 1) + value.shape[-2:], device=latents.device),
                     )
 
-                    # Convert reference image to latent space
+                    # ref_img导入
                     latents_ref_img = vae.encode(value).latent_dist.sample()
+
+                    ## 注意分布一致
                     latents_ref_img = latents_ref_img * vae.config.scaling_factor
 
                     # Get text encode feature
                     text_encoder_hidden_states = clip_encode_text(key).repeat(bsz, 1, 1)
 
                     # Pass the reference image through the reference unet
+                    ## ref_net的输入，需求的不是该net的输出，而是中间层的token，好奇这个net编解码是恢复原样吗
                     ref_unet(
                         latents_ref_img,
                         ref_timesteps,
@@ -462,6 +472,9 @@ def main(
                         cross_attention_kwargs={"hidden_states_mask": vmask},
                     )
 
+                ## 核心导入参数结构，具体怎么做？
+                ## 针对ref_net来update main net
+                ## 实际上将ref_net的每个module的bank信息传递给了main_net
                 reference_control_reader.update(reference_control_writer)
 
             # Prepare clip conditioning embedding
@@ -506,7 +519,8 @@ def main(
             if classifier_free_guidance is not None:
                 drop_mask = torch.rand(bsz, device=latents.device) < classifier_free_guidance
                 encoder_hidden_states[drop_mask] = 0.0
-
+            
+            ## 有了bank后unet是如何计算self_attn呢？
             model_pred = unet(
                 noisy_latents,
                 timesteps,
@@ -633,6 +647,8 @@ def main(
             lr_scheduler.step()
 
             optimizer.zero_grad()
+
+            ## 注意每一步训练完成后需要清除两个net的bank信息
             reference_control_reader.clear()
             reference_control_writer.clear()
             logs = {
